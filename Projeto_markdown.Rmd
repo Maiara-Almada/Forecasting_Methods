@@ -40,34 +40,43 @@ This notebook will transition from Identification (using ACF/PACF plots) to Esti
 ```{r data import}
 # Loading and transforming the data into a tsibble
 unemployment_ts <- read.csv("UNRATE.csv") %>%
-  mutate(observation_date = as.Date(observation_date)) %>%
+  mutate(observation_date = yearmonth(observation_date)) %>%
   as_tsibble(index = observation_date)
-# 2. Fill the "holes" (Implicit Gaps)
 
-unemployment_ts_clean<-fill_gaps(unemployment_ts) %>%                             
+# 1. Clean the entire dataset first (Fill implicit holes and explicit NAs)
+unemployment_ts %>% 
+  autoplot(UNRATE)
 
-# 3. Fill the empty values (Explicit NAs)
-# We use 'down' to fill a missing month with the previous month's rate
-  fill(UNRATE, .direction = "down")
+# 2. Split into Training Data (All data prior to January 2019)
+
 ```
 
 ## 2. Data Exploration (EDA)
 
 ### 2.2 Checking and removing Missing Values
-```{r vchecking and filling missing values}
-# Visualizing the Unemployment Rate series
-sum(is.na(unemployment_ts_clean$UNRATE))
 
-# Remove NAs to prevent errors in ur.df
-data <- unemployment_ts_clean %>%
-  filter(!is.na(UNRATE))
+```
+
+
+
+```{r}
+train_data <- unemployment_ts %>% 
+  filter(year(observation_date) < 2018)
+
+# 3. Split into Test Data (Exactly the year 2019)
+# Method A: Using exact date boundaries
+test_data <- data %>% 
+  filter(year(observation_date) > 2018 & year(observation_date) < 2020)
+
+# Alternative Method B (Cleaner): Using lubridate's year() function
+# test_data <- unemployment_clean %>% filter(year(observation_date) == 2019)
 ```
 
 ### 2.2 Time Series Visualization
 The visualization of the US Civilian Unemployment Rate reveals a series with significant cyclicality and sudden shocks, particularly during global economic crises. The absence of a constant mean and the presence of long-term "drifts" suggest that the series is non-stationary
 ```{r visualization}
 # Visualizing the Unemployment Rate series
-data %>%
+train_data %>%
   autoplot(UNRATE) +
   labs(title = "US Civilian Unemployment Rate (Monthly)",
        subtitle = "Source: FRED",
@@ -76,48 +85,71 @@ data %>%
   theme_minimal()
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
-
-### 2.3 Formal Stationarity Verification
-To determine the integration order ($d$) of the series, we employ the Augmented Dickey-Fuller (ADF) test following a general-to-specific strategy. Since the initial time plot does not display a clear deterministic trend pattern, the first approach will be to test a model including only a constant (drift).
-
-Step 1: Drift Model
-
-We begin with a specification that includes a constant term, which is appropriate for an unemployment rate that does not fluctuate around zero but lacks a permanent linear trend.
-
-$H_0$: The series has a unit root (is non-stationary).
-
-$H_1$: The series is trend-stationary.
-
-Lag Selection Strategy:
-
-Following the manual requirement, I start the test with 16 lags (accounting for the monthly nature of the data) and decrease the count one by one until the last lagged difference is statistically significant. I will identify significance by checking if the p-value is less than 0.05 (or the presence of stars * in the coefficient table).
+GTS approach to find a significant lag
 
 ```{r checking stationarity}
+train_data %>% 
+  gg_tsdisplay(UNRATE, plot_type='partial')
+
+
 # ADF test: Type = "drift"
-adf_drift <- ur.df(data$UNRATE, 
-                          type = "drift", 
-                          lags = 0)
+adf_drift <- ur.df(train_data $UNRATE, 
+                          type = "drift",
+                          lags=24)
 summary(adf_drift)
+
 ```
 
-Through this iterative process, we arrived at Lag 0 as the only significant specification for the auxiliary regression. This simplifies the procedure from an Augmented Dickey-Fuller to a standard Dickey-Fuller (DF) test, represented by the following auxiliary expression:$$\Delta y_t = \alpha + \gamma y_{t-1} + \epsilon_t$$
-
-Final Decision on Stationarity with the lag length fixed at 0, the test results are as follows:
-
-Test Statistic ($\tau_2$): $-3.81$
-
-Critical Value (5%): Approximately $-2.87$
-
-Since the test statistic is significantly smaller than the critical value ($-3.81 < -2.87$), we reject the null hypothesis ($H_0$). This provides sufficient evidence to conclude that the US Unemployment Rate series is stationary ($d=0$) when accounting for a drift term. Consequently, no differencing is required for the subsequent identification of ARIMA components.  
+A seguir vamos diferenciar 
 
 ```{r checking stationarity}
-# ADF test: Type = "drift"
-# ACF and PACF plots for the level series (d=0)
-data %>%
-  gg_tsdisplay(UNRATE, plot_type = 'partial') +
-  labs(title = "ACF and PACF: US Civilian Unemployment Rate",
-       subtitle = "Identification of p and q parameters for a stationary series",
-       y = "Value",
-       x = "Lag")
+# 1. Criar o dataset com a variável diferenciada
+# Isto sim, é uma diferenciação sazonal (ex: lag = 12 para dados mensais)
+diff_sazonal_data <- train_data %>% 
+  mutate(UNRATE_seasonal_diff = difference(UNRATE, lag = 12))
+# 2. Plotar a ACF e PACF da série diferenciada
+diff_sazonal_data %>% 
+  gg_tsdisplay(UNRATE_seasonal_diff, plot_type = 'partial', lag_max = 40)
 ```
+
+Diferenciamos e agora vamos fazer de novo o teste D=1
+```{r}
+# ADF test: Type = "drift"
+adf_drift_diff <- ur.df(diff_sazonal_data $UNRATE, 
+                          type = "drift",
+                          lags=12)
+summary(adf_drift_diff)
+```
+
+We find significance in lag 12 and reject the null having the ts as stationary but the ac f and pacf show non-stationarity. 
+This is due to the fact that we are using percentual data per se and bec ause it is not infitine it doesnt behave as a Random Walk na definição teórica mais clássica.
+```{r}
+# 1. Apply a seasonal difference (lag 12) AND an ordinary difference (lag 1)
+double_diff_data <- diff_sazonal_data %>% 
+  mutate(UNRATE_double_diff = difference(difference(UNRATE, lag = 12)))
+
+# 2. Plot the new ACF and PACF up to lag 40
+double_diff_data %>% 
+  gg_tsdisplay(UNRATE_double_diff, plot_type = 'partial', lag_max = 40)
+```
+Now the ts looks finally stationary!!!!!! D=2
+we will do the DF test again
+```{r}
+adf_drift_diff2 <- ur.df(double_diff_data $UNRATE, 
+                          type = "drift",
+                          lags=12)
+summary(adf_drift_diff2)
+```
+Significance in lag 12 and the test result forces us to reject H0 so proves stationarity but because it gives us exacly the same statistical values as the cell of the 1st diff i decided to try another approac h and it gave the same result so now our TS is stationary
+
+```{r}
+
+adf_drift_diff2 <- ur.df(double_diff_data $UNRATE, 
+                          type = "drift",
+                          selectlags='AIC', lags=12)
+summary(adf_drift_diff2)
+
+```
+time to classify the model:
+SARIMA(1,0,1)(1,2,3)12
+SARIMA(1,0,0)(1,2,3)12
