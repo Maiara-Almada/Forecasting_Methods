@@ -1,6 +1,10 @@
 ---
-title: "US Civilian Unemployment Rate: A Box-Jenkins Forecasting Approach"
-author: "Forecasting Methods Project"
+title: "Forecasting Methods Project"
+subtitle: "US Civilian Unemployment Rate: A Box-Jenkins Forecasting Approach"
+author: 
+- Joana Nobre Martins 20241676
+- Maiara Almada 20241723
+- Mariana Martins 20241791
 output: html_document
 ---
 
@@ -38,8 +42,11 @@ The primary objective of this project is to apply the Box-Jenkins methodology to
 
 ### 1.3 Methodology
 This notebook transitions through the three standard phases of the Box-Jenkins framework:
+
 1.  **Identification:** Analyzing time series plots, Autocorrelation Functions (ACF), and Partial Autocorrelation Functions (PACF) to determine stationarity, appropriate differencing ($d, D$), and potential AR/MA lags.
+
 2.  **Estimation and Diagnostic Checking:** Fitting candidate SARIMA models, evaluating their information criteria (AICc, BIC), assessing coefficient significance, and verifying that the residuals behave as white noise via Ljung-Box and Box-Pierce diagnostic tests.
+
 3.  **Forecasting and Validation:** Implementing out-of-sample forecasts over a 12-month horizon (January to December 2019), assessing forecast accuracy against historical benchmarks, and utilizing a weighted forecast combination to optimize predictions.
 
 ### 1.4 Importing and Preparing the Dataset
@@ -316,8 +323,9 @@ accuracy(fc_sarima211112, unemployment_ts) %>%
   arrange(RMSE)
 ```
 
-#### Explanation of Plot:ATUALIZAR!!!!!
-The out-of-sample forecast plots show how each model projects the unemployment rate throughout 2019, along with their 80% and 95% confidence intervals (shaded regions). The actual observed values for 2019 are shown in black. All models project a stable, slightly declining trend, capturing the general direction of the US economy in 2019. The confidence intervals represent the range of uncertainty; as expected, the interval width expands as the forecast horizon increases from 1 to 12 months. The out-of-sample metrics reveal that `sarima111111` yields the lowest forecasting errors ($\text{RMSE} = 0.325$, $\text{MAE} = 0.300$), while our selected model `sarima210113` yields an $\text{RMSE} = 0.538$ and $\text{MAE} = 0.487$.
+#### Explanation of Plot:
+
+The out-of-sample forecast plot illustrates how the selected `sarima211112` model projects the unemployment rate throughout 2019, accompanied by its 80% and 95% confidence intervals. The actual observed values are shown in black. The model captures the stable economic trend of 2019 accurately, before the massive, unpredictable structural shock observed in early 2020. The expanding confidence intervals successfully reflect the typical increase in uncertainty over a 12-month horizon. This strong performance is empirically validated by the out-of-sample metrics, where the model achieves an exceptionally low MAPE of 1.48% and a ($\text{MASE} = 0.478$), proving its high predictive accuracy and superior performance against a baseline naive forecast.
 
 ### 6.1 Direct Comparison: In-Sample vs. Out-of-Sample Accuracy
 We compare the training (in-sample) errors and test (out-of-sample) errors to ensure that the models have not overfit the training data.
@@ -336,55 +344,15 @@ metrics_comparison <- bind_rows(
 metrics_comparison
 ```
 
-#### In-Sample vs. Out-of-Sample Comparison Analysis:ATUALIZAR!!!!
-The comparison reveals that for our selected model `sarima210113`, the RMSE rises from `0.192` in-sample to `0.538` out-of-sample. This increase indicates a moderate loss of predictive accuracy when transitioning to out-of-sample forecasting.
+#### In-Sample vs. Out-of-Sample Comparison Analysis: EXPLICAR PORQUE NAO TEMOS OVERFITTING
+The comparison reveals that for our selected model `sarima211112`, the RMSE rises from `0.187` in-sample to `0.415` out-of-sample. This increase indicates a moderate loss of predictive accuracy when transitioning to out-of-sample forecasting.
+
 
 ---
 
-## 7. Forecast Combination
-
-To further enhance forecasting robustness, we implement a forecast combination. We combine the forecasts of the individual models that showed acceptable residual behaviors (using a Ljung-Box p-value threshold of $> 0.00001$), weighting their point forecasts by the inverse of their training RMSE. This ensemble technique reduces variance and mitigates the risk of selecting a single suboptimal model.
-
-```{r forecast combination}
-
-# 3. Generate the combined point forecast (weighted average)
-fc_combo_rmse <- fc_all %>%
-  filter(.model %in% valid_models) %>%
-  as_tibble() %>%
-  left_join(weights_rmse %>% select(.model, w), by = ".model") %>%
-  group_by(observation_date) %>%
-  summarise(.mean = sum(w * .mean), .groups = "drop") %>%
-  mutate(.model = "combo_rmse")
-
-# 4. Compare Out-of-Sample RMSE of individual models vs Combined Forecast
-bind_rows(
-  accuracy(fc_all, unemployment_ts) %>% select(.model, RMSE),
-  fc_combo_rmse %>%
-    inner_join(test_data %>% as_tibble(), by = "observation_date") %>%
-    summarise(.model = "combo_rmse", RMSE = sqrt(mean((UNRATE - .mean)^2)))
-) %>%
-  arrange(RMSE)
-
-# 5. Plot: Individual forecasts (grey) vs Combined forecast (red) vs Observed (black)
-ggplot() +
-  geom_line(data = unemployment_ts %>% filter(observation_date >= cutoff_date - 24),
-            aes(x = observation_date, y = UNRATE), colour = "black", linewidth = 0.8) +
-  geom_line(data = fc_all %>% filter(.model %in% valid_models) %>% as_tibble(),
-            aes(x = observation_date, y = .mean, group = .model),
-            colour = "grey60", linewidth = 0.4, alpha = 0.7) +
-  geom_line(data = fc_combo_rmse,
-            aes(x = observation_date, y = .mean), colour = "firebrick", linewidth = 1) +
-  labs(title = "Forecast Combination (Red) vs Individual Models (Grey) vs Observed (Black)",
-       y = "Unemployment Rate (%)", 
-       x = "Observation Date") +
-  theme_minimal()
-```
-
-#### Explanation of Plot:
-The combination plot illustrates the individual model forecasts (grey lines), the combined forecast (red line), and the actual observed values (black line) during 2019. The combined forecast (`combo_rmse`) acts as an ensemble model, smoothing out individual model biases. The out-of-sample RMSE table reveals that the combined model yields an RMSE of `0.428`, which outperforms our individual `sarima210113` model (`0.538`) and `sarima111113` (`0.423`), though it is slightly higher than the simplest `sarima111111` model (`0.325`). This demonstrates that forecast combination provides a highly stable, balanced forecasting alternative.
 
 ---
-#IGNORAR ISTO FOI O ANTIGRAVITY!!!
+# REFAZER ISTO FOI O ANTIGRAVITY!!!
 
 ## 8. Conclusion and Reflection
 
