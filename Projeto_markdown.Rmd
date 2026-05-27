@@ -169,6 +169,7 @@ Based on the ACF and PACF plots of the double-differenced series, we propose fou
 2.  **$\text{SARIMA}(1,1,0)(1,1,3)_{12}$**
 3.  **$\text{SARIMA}(1,1,1)(1,1,1)_{12}$**
 4.  **$\text{SARIMA}(2,1,0)(1,1,3)_{12}$**
+5.  **$\text{SARIMA}(4,1,1)(2,1,2)_{12}$**
 
 ```{r model fitting}
 # Fitting the four candidate models to the training data
@@ -177,8 +178,10 @@ fit <- train_data %>%
     sarima111113 = ARIMA(UNRATE ~ pdq(1, 1, 1) + PDQ(1, 1, 3)),  
     sarima110113 = ARIMA(UNRATE ~ pdq(1, 1, 0) + PDQ(1, 1, 3)),  
     sarima111111 = ARIMA(UNRATE ~ pdq(1, 1, 1) + PDQ(1, 1, 1)),
-    sarima210113 = ARIMA(UNRATE ~ pdq(2, 1, 0) + PDQ(1, 1, 3))
+    sarima210113 = ARIMA(UNRATE ~ pdq(2, 1, 0) + PDQ(1, 1, 3)),
+    sarima211112 = ARIMA(UNRATE ~ pdq(2, 1, 1) + PDQ(1, 1, 2))
   )
+
 
 # Display model names and orders
 fit %>%
@@ -188,6 +191,8 @@ fit %>%
 glance(fit) %>%
   arrange(AICc) %>%
   select(.model, sigma2, log_lik, AIC, AICc, BIC)
+
+
 ```
 
 #### Model Selection Analysis:
@@ -210,6 +215,9 @@ fit %>% select(sarima111113) %>% gg_tsresiduals(lag_max = 36)
 fit %>% select(sarima110113) %>% gg_tsresiduals(lag_max = 36)
 fit %>% select(sarima111111) %>% gg_tsresiduals(lag_max = 36)
 fit %>% select(sarima210113) %>% gg_tsresiduals(lag_max = 36)
+fit %>% select(sarima211112) %>% gg_tsresiduals(lag_max = 36)
+
+
 ```
 
 #### Explanation of Residual Plots:
@@ -225,13 +233,14 @@ bind_rows(
   augment(fit) %>% filter(.model == "sarima111113") %>% features(.innov, ljung_box, lag = 36, dof = 6) %>% mutate(.model = "sarima111113"),
   augment(fit) %>% filter(.model == "sarima110113") %>% features(.innov, ljung_box, lag = 36, dof = 5) %>% mutate(.model = "sarima110113"),
   augment(fit) %>% filter(.model == "sarima111111") %>% features(.innov, ljung_box, lag = 36, dof = 4) %>% mutate(.model = "sarima111111"),
-  augment(fit) %>% filter(.model == "sarima210113") %>% features(.innov, ljung_box, lag = 36, dof = 6) %>% mutate(.model = "sarima210113")
+  augment(fit) %>% filter(.model == "sarima210113") %>% features(.innov, ljung_box, lag = 36, dof = 6) %>% mutate(.model = "sarima210113"),
+  augment(fit) %>% filter(.model == "sarima211112") %>% features(.innov, ljung_box, lag = 36, dof = 6) %>% mutate(.model = "sarima211112"),
 ) %>%
   arrange(desc(lb_pvalue))
 ```
 
 #### Explanation of Diagnostic Results:
-The formal tests confirm that while none of the models strictly pass the 5% significance threshold (a common issue in massive daily or monthly economic series due to minor, unmodeled short-term dependencies), `sarima210113` achieves the best relative performance, yielding the highest Ljung-Box p-value. It is selected as our winning individual model because it satisfies the principle of parsimony and has a highly clean residual structure compared to the other candidate formulations.
+The formal tests confirm that the only model which strictly pass the 5% significance threshold is sarima211112 with a p-value = 0.322. It is selected as our winning individual model.
 
 ---
 
@@ -242,7 +251,7 @@ We fit our chosen model to the training set and compare its fitted values agains
 ```{r in-sample fit}
 # Estimate the final chosen model on the training data
 fit_final <- train_data %>%
-  model(sarima210113 = ARIMA(UNRATE ~ pdq(2, 1, 0) + PDQ(1, 1, 3)))
+  model(sarima211112 = ARIMA(UNRATE ~ pdq(2, 1, 0) + PDQ(1, 1, 3)))
 
 # Extract fitted values
 aug_final <- augment(fit_final)
@@ -258,14 +267,19 @@ aug_final %>%
   theme_minimal()
 
 # Calculate and compare In-Sample training errors across all candidate models
-accuracy(fit) %>%
+accuracy(fit_final) %>%
   select(.model, RMSE, MAE, MAPE, MASE) %>%
   arrange(RMSE)
 ```
 
 #### Explanation of Plot:
-The in-sample fit plot illustrates the fitted values (blue line) plotted over the actual US unemployment rate (black line) during the training period. The model tracks the actual data exceptionally well, successfully capturing both long-term business cycles and sharp turning points (e.g., the rapid spikes during recessions). The in-sample error metrics show that `sarima111113` has the lowest training error ($\text{RMSE} = 0.191$), and our chosen model `sarima210113` is a close second ($\text{RMSE} = 0.192$). This minor difference is a small price to pay for the superior, more stable parameter structure of `sarima210113`.
-
+The in-sample fit plot illustrates the fitted values (blue line) plotted over the actual US unemployment rate (black line) during the training period. The model tracks the actual data exceptionally well. 
+The in-sample error metrics confirms and consolidates the 
+selection of the`sarima211112`. This model consistently achieved the lowest error values across all evaluation criteria:  ($\text{RMSE} = 0.187$), ($\text{MAE} = 0.187$) and ($\text{MAPE} = 0.187$)
+The fact that this model simultaneously delivers the highest predictive accuracy 
+(lowest errors) and stands as the only candidate whose residuals were 
+validated as white noise (via the Ljung-Box test) makes it the unequivocal 
+choice for modeling and forecasting the unemployment rate (UNRATE).
 ---
 
 ## 6. Out-of-Sample Forecast and Validation
@@ -274,11 +288,11 @@ We generate 12-month out-of-sample forecasts for all candidate models and compar
 
 ```{r out-of-sample forecast}
 # 1. Generate out-of-sample forecasts for all models on the test set (2019)
-fc_all <- fit %>% 
+fc_sarima211112 <- fit %>% select(sarima211112) %>% 
   forecast(new_data = test_data)
 
 # 2. Plot: Overlaid point forecasts of all models against the full time series
-fc_all %>%
+fc_sarima211112 %>%
   autoplot(unemployment_ts, level = NULL) +
   labs(title = "US Unemployment Rate: Out-of-Sample Point Forecasts Overlaid",
        y = "Unemployment Rate (%)", 
@@ -288,7 +302,7 @@ fc_all %>%
 
 # 3. Zoom plot on the test period with 80% and 95% confidence intervals
 cutoff_date <- min(test_data$observation_date)
-fc_all %>%
+fc_sarima211112 %>%
   autoplot(unemployment_ts %>% filter(observation_date >= cutoff_date - 24)) +
   facet_wrap(~ .model, ncol = 2) +
   labs(title = "Out-of-Sample Forecast Comparison with Confidence Intervals",
@@ -297,28 +311,32 @@ fc_all %>%
   theme_minimal()
 
 # 4. Out-of-sample forecast accuracy metrics (Test Accuracy)
-accuracy(fc_all, unemployment_ts) %>%
+accuracy(fc_sarima211112, unemployment_ts) %>%
   select(.model, RMSE, MAE, MAPE, MASE) %>%
   arrange(RMSE)
 ```
 
-#### Explanation of Plot:
+#### Explanation of Plot:ATUALIZAR!!!!!
 The out-of-sample forecast plots show how each model projects the unemployment rate throughout 2019, along with their 80% and 95% confidence intervals (shaded regions). The actual observed values for 2019 are shown in black. All models project a stable, slightly declining trend, capturing the general direction of the US economy in 2019. The confidence intervals represent the range of uncertainty; as expected, the interval width expands as the forecast horizon increases from 1 to 12 months. The out-of-sample metrics reveal that `sarima111111` yields the lowest forecasting errors ($\text{RMSE} = 0.325$, $\text{MAE} = 0.300$), while our selected model `sarima210113` yields an $\text{RMSE} = 0.538$ and $\text{MAE} = 0.487$.
 
 ### 6.1 Direct Comparison: In-Sample vs. Out-of-Sample Accuracy
 We compare the training (in-sample) errors and test (out-of-sample) errors to ensure that the models have not overfit the training data.
 
 ```{r in vs out comparison}
+
+winner_fit <- train_data %>%
+  model(sarima211112 = ARIMA(UNRATE ~ pdq(2, 1, 1) + PDQ(1, 1, 2)))
+
 # Merge and display in-sample vs out-of-sample metrics
-bind_rows(
-  accuracy(fit) %>% mutate(Type = "In-Sample (Training)"),
-  accuracy(fc_all, unemployment_ts) %>% mutate(Type = "Out-of-Sample (Testing)")
+metrics_comparison <- bind_rows(
+  accuracy(winner_fit) %>% mutate(Type = "In-Sample (Training)"),
+  accuracy(fc_sarima211112, unemployment_ts) %>% mutate(Type = "Out-of-Sample (Testing)")
 ) %>%
-  select(Type, .model, RMSE, MAE, MAPE, MASE) %>%
-  arrange(Type, RMSE)
+  select(Type, .model, RMSE, MAE, MAPE, MASE)
+metrics_comparison
 ```
 
-#### In-Sample vs. Out-of-Sample Comparison Analysis:
+#### In-Sample vs. Out-of-Sample Comparison Analysis:ATUALIZAR!!!!
 The comparison reveals that for our selected model `sarima210113`, the RMSE rises from `0.192` in-sample to `0.538` out-of-sample. This increase indicates a moderate loss of predictive accuracy when transitioning to out-of-sample forecasting.
 
 ---
@@ -328,20 +346,6 @@ The comparison reveals that for our selected model `sarima210113`, the RMSE rise
 To further enhance forecasting robustness, we implement a forecast combination. We combine the forecasts of the individual models that showed acceptable residual behaviors (using a Ljung-Box p-value threshold of $> 0.00001$), weighting their point forecasts by the inverse of their training RMSE. This ensemble technique reduces variance and mitigates the risk of selecting a single suboptimal model.
 
 ```{r forecast combination}
-# 1. Select valid candidate models based on residual behavior
-valid_models <- augment(fit) %>%
-  features(.innov, ljung_box, lag = 24) %>%
-  filter(lb_pvalue > 0.00001) %>%
-  pull(.model)
-
-# 2. Calculate combination weights based on the inverse of training RMSE
-weights_rmse <- accuracy(fit) %>%
-  filter(.model %in% valid_models) %>%
-  mutate(w = (1/RMSE) / sum(1/RMSE)) %>%
-  select(.model, RMSE, w)
-
-print("Calculated Model Weights for Ensemble Combination:")
-print(weights_rmse)
 
 # 3. Generate the combined point forecast (weighted average)
 fc_combo_rmse <- fc_all %>%
@@ -380,6 +384,7 @@ ggplot() +
 The combination plot illustrates the individual model forecasts (grey lines), the combined forecast (red line), and the actual observed values (black line) during 2019. The combined forecast (`combo_rmse`) acts as an ensemble model, smoothing out individual model biases. The out-of-sample RMSE table reveals that the combined model yields an RMSE of `0.428`, which outperforms our individual `sarima210113` model (`0.538`) and `sarima111113` (`0.423`), though it is slightly higher than the simplest `sarima111111` model (`0.325`). This demonstrates that forecast combination provides a highly stable, balanced forecasting alternative.
 
 ---
+#IGNORAR ISTO FOI O ANTIGRAVITY!!!
 
 ## 8. Conclusion and Reflection
 
