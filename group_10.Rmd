@@ -1,0 +1,490 @@
+---
+title: "Forecasting Methods Project"
+subtitle: "US Civilian Unemployment Rate: A Box-Jenkins Forecasting Approch"
+author: 
+  - "Joana Nobre Martins 20241676"
+  - "Maiara Almada 20241723"
+  - "Mariana Martins 20241791"
+output: html_document
+---
+## Table of Contents
+
+* [1. Introduction and Problem Definition](#1.-introduction-and-problem-definition)
+    * [1.1 Context, Dataset, and Bounded Rate Nuances](#1.1-context,-dataset,-and-bounded-rate-nuances)
+    * [1.2 Forecasting Objective](#1.2-forecasting-objective)
+    * [1.3 Methodology Overview](#1.3-methodology-overview)
+* [2. Data Exploration (EDA) and Stationarity Analysis](#2.-data-exploration-(eda)-and-stationarity-analysis)
+    * [2.1 Partitioning Training and Test Windows](#2.1-partitioning-training-and-test-windows)
+    * [2.2 Visual Inspection of Cyclical Dynamics](#2.2-visual-inspection-of-cyclical-dynamics)
+    * [2.3 Stepwise Differencing and Unit Root Testing ($d, D$)](#2.3-stepwise-differencing-and-unit-root-testing-($d,-d$))
+    * [2.4 Seasonal Differencing (D = 1)](#2.4-seasonal-differencing-(d-=-1))
+    * [2.5 First-Order Difference (d = 1)](#2.5-first-order-difference-(d-=-1))
+* [3. Box-Jenkins Modeling: Model Selection and Diagnostics](#3.-box-jenkins-modeling:-model-selection-and-diagnostics)
+    * [3.1 Candidate Model Specification and Information Criteria Comparison](#3.1-candidate-model-specification-and-information-criteria-comparison)
+    * [3.2 Second-Approach Alternative Specifications](#3.2-second-approach-alternative-specifications)
+    * [3.3 Automated Benchmarking via `auto.arima`](#3.3-automated-benchmarking-via-auto.arima)
+    * [3.4 Comprehensive Model Selection and Information Criteria Analysis Including Automated Baseline](#3.4-comprehensive-model-selection-and-information-criteria-analysis-including-automated-baseline)
+* [4. Residual Diagnostics](#4.-residual-diagnostics)
+    * [4.1 Visual Residual Diagnostics](#4.1-visual-residual-diagnostics)
+    * [4.2 Formal Diagnostic Tests (Ljung-Box and Box-Pierce)](#4.2-formal-diagnostic-tests-(ljung-box-and-box-pierce))
+* [5. In-Sample Forecast and Fit Errors](#5.-in-sample-forecast-and-fit-errors)
+    * [5.1 Final Model Estimation and In-Sample Performance and In-Sample Accuracy Analysis](#5.1-final-model-estimation-and-in-sample-performance-and-in-sample-accuracy-analysis)
+* [6. Out-of-Sample Forecast and Validation](#6.-out-of-sample-forecast-and-validation)
+    * [6.1 Out-of-Sample Forecasting and Testing (Validation Period: 2019)](#6.1-out-of-sample-forecasting-and-testing-(validation-period:-2019))
+    * [6.2 Direct Comparison: In-Sample vs. Out-of-Sample Accuracy](#6.2-direct-comparison:-in-sample-vs.-out-of-sample-accuracy)
+* [7. Conclusion and Reflection](#7.-conclusion-and-reflection)
+    * [7.1 Summary of Outcomes and Diagnostic Triumph](#7.1-summary-of-outcomes-and-diagnostic-triumph)
+    * [7.2 Dataset Constraints and Methodological Resilience](#7.2-dataset-constraints-and-methodological-resilience)
+    * [7.3 Limitations and Future Directions](#7.3-limitations-and-future-directions)
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+# Install necessary packages if they are not already installed
+if (!require("tidyverse")) install.packages("tidyverse", repos = "https://cran.rstudio.com/")
+if (!require("tsibble")) install.packages("tsibble", repos = "https://cran.rstudio.com/")
+if (!require("fable")) install.packages("fable", repos = "https://cran.rstudio.com/")
+if (!require("feasts")) install.packages("feasts", repos = "https://cran.rstudio.com/")
+if (!require("urca")) install.packages("urca", repos = "https://cran.rstudio.com/")
+if (!require("patchwork")) install.packages("patchwork", repos = "https://cran.rstudio.com/")
+
+# Load all required libraries
+library(tidyverse)
+library(tsibble)
+library(fable)
+library(feasts)
+library(urca)
+library(lubridate)
+library(patchwork)
+library(ggtime)
+```
+
+## 1. Introduction and Problem Definition
+
+### 1.1 Context, Dataset, and Bounded Rate Nuances
+This project analyzes the US Civilian Unemployment Rate (UNRATE), a key macroeconomic indicator representing the percentage of the labor force that is unemployed and actively seeking employment. Sourced from the Federal Reserve Economic Data (FRED), the complete dataset available extends from January 1948 all the way through April 2026. However, for the operational scope of this research, the active historical analysis window is intentionally capped at December 2019.
+The subsequent years (2020 and onward) were deliberately excluded from our model identification and training phases because the massive economic anomalies caused by the COVID-19 pandemic introduced severe structural breaks. These unprecedented spikes would have heavily distorted our unit root configurations and statistical diagnostics, preventing us from capturing a typical economic environment. Understanding and modeling the civilian unemployment rate up through this stabilized pre-pandemic window provides valuable insights into the health of the United States economy, serving as a primary signal for economic expansions, contractions, and structural transformations.
+Important Econometric Note on Bounded Data: Because the UNRATE dataset represents a percentage rate, it is inherently bounded below by $0\%$ and upper-bounded by $100\%$. Consequently, it violates the strict theoretical definition of a pure random walk process, which assumes infinite variance over an infinite time horizon ($T \rightarrow \infty$). Because the series is fundamentally constrained to finite data limits, certain asymptotic properties of traditional statistical tests—such as the standard Augmented Dickey-Fuller (ADF) unit root boundaries—may not be completely reliable. This bounded restriction requires careful handling when evaluating stationarity and interpreting critical thresholds.
+
+### 1.2 Forecasting Objective
+The primary objective of this project is to apply the Box-Jenkins methodology to identify, estimate, and validate the most suitable Seasonal Autoregressive Integrated Moving Average (SARIMA) model. Forecasting the unemployment rate is crucial for various reasons:
+
+* **Policy Formulation:** Assists central banks (e.g., the Federal Reserve) in managing its dual mandate of price stability and maximum sustainable employment, guiding decisions on monetary stimulus or interest rate adjustments.
+* **Economic Stability:** Provides businesses, investors, and individuals with a reliable signal to anticipate shifts in consumer spending, credit risk, and industrial demand.
+
+### 1.3 Methodology Overview
+This notebook transitions through the three standard phases of the Box-Jenkins framework:
+
+1. **Tentative Identification:** Analyzing time series plots, Autocorrelation Functions (ACF), and Partial Autocorrelation Functions (PACF) to determine stationarity, appropriate differencing ($d, D$), and potential AR/MA lags.
+2. **Estimation and Diagnostic Checking:** Fitting candidate models alongside automated search functions, evaluating their information criteria ($\text{AICc}, \text{BIC}$), assessing coefficient significance, and verifying that the residuals behave as a white noise process via degrees-of-freedom adjusted Ljung-Box and Box-Pierce diagnostics.
+3. **Forecasting and Validation:** Implementing out-of-sample forecasts over a 12-month horizon (January to December 2019) and assessing forecast accuracy metrics against real-world observations.
+
+## 2. Data Exploration (EDA) and Stationarity Analysis
+
+```{r data import}
+# Loading and transforming the data into a tsibble
+unemployment_ts <- read.csv("data_group_10.csv") %>%
+  mutate(observation_date = yearmonth(observation_date)) %>%
+  as_tsibble(index = observation_date)
+
+# Initial visualization of the entire dataset
+unemployment_ts %>% 
+  autoplot(UNRATE) +
+  labs(title = "Full Dataset: US Civilian Unemployment Rate (1948 - 2019)",
+       y = "Unemployment Rate (%)",
+       x = "Observation Date") +
+  theme_minimal()
+```
+
+---
+### 2.1 Partitioning Training and Test Windows
+To evaluate our forecasting models rigorously, the dataset is split into a historical training window and an out-of-sample test window. The training data spans from January 1948 through December 2018. The test set consists of exactly the 12 months of 2019, serving as our clean out‑of‑sample benchmark for assessing predictive accuracy.  
+
+The year 2020 was intentionally excluded from the analysis, as it represents an exceptionally atypical period due to the catastrophic economic disruptions caused by the COVID‑19 pandemic. Including such an abnormal anomaly would distort model evaluation, bias historical structures, and prevent us from obtaining forecasts that reflect a standard economic environment.
+
+```{r train test split}
+# Split into Training Data (All data prior to 2019)
+train_data <- unemployment_ts %>% 
+  filter(year(observation_date) < 2019)
+
+# Split into Test Data (2019)
+test_data <- unemployment_ts %>% 
+  filter(year(observation_date) > 2018 & year(observation_date) < 2020)
+```
+
+### 2.2 Visual Inspection of Cyclical Dynamics
+A visual inspection of the training series is conducted to analyze its structural characteristics, such as long-term trends, cyclical movements, and repeating patterns. In this step, we visualize the time series plot alongside the Autocorrelation Function (ACF) and Partial Autocorrelation Function (PACF) at the same time to perform a visual inspection and evaluate if the data appears stationary.
+
+```{r visualization}
+# Visualizing the training dataset
+train_data %>%
+  autoplot(UNRATE) +
+  labs(title = "US Civilian Unemployment Rate (Training Set: 1948 - 2018)",
+       subtitle = "Source: FRED (Federal Reserve Economic Data)",
+       y = "Unemployment Rate (%)",
+       x = "Year") +
+  theme_minimal()
+
+# Visualizing ACF and PACF plots
+train_data %>% 
+  gg_tsdisplay(UNRATE, plot_type = 'partial')
+```
+
+#### Explanation of Time-Series Plot:
+The time series plot reveals that the US Civilian Unemployment Rate fluctuates between approximately $2\%$ and $11\%$. The series displays prominent cyclicality, with sharp, rapid increases during economic recessions, followed by long, slow recovery periods. The lack of clear mean-reverting behavior strongly suggests that the series is non-stationary, indicating the need for mathematical differencing before seasonal ARIMA modeling can begin.
+
+#### ACF & PACF Plot Interpretation:
+The raw ACF and PACF plots show a pattern characteristic of a non-stationary time series. The ACF presents a slow linear decay. Even though our data does not theoretically behave like a true random walk due to its bounded rate nature (as explained previously), the PACF shows a single dominant spike and cuts off immediately after, which structurally represents a classic random walk behavior.
+
+### 2.3 Stepwise Differencing and Unit Root Testing ($d, D$)
+To formally confirm non-stationarity, we execute an Augmented Dickey-Fuller (ADF) test using a General-to-Specific (GTS) approach to determine the optimal lag length. Initially, we applied the GTS approach starting with 16 lags, but we only found statistical significance at lag 0. To ensure we were capturing any higher-order serial correlation, we extended our search and tried the test with 25 lags, which successfully revealed significance at lag 24. 
+
+```{r checking stationarity}
+
+# ADF test on the training set: Type = "drift" (allowing for non-zero mean)
+adf_drift <- ur.df(train_data$UNRATE, 
+                   type = "drift",
+                   lags = 24)
+summary(adf_drift)
+```
+Since our $t$-statistic of `-2.6165` is less negative (greater than) our 5% critical value of `-2.86`, we fail to reject $H_0$ ($H_0$: non-stationary; $H_1$: stationary), statistically confirming that the raw series is non-stationary.
+
+
+To resolve this remaining trend, we apply a double-differencing transformation ($d=1, D=1$). The double-differenced series ($d=1, D=1$) displays an ideal stationary profile. The ACF drops off instantly with significant spikes at regular lags 1 and 2, and a seasonal spike at lag 12. The PACF displays clear spikes at regular lags 1, 2, and 3, along with a seasonal spike at lag 12. The ADF test statistic on this transformation is extremely negative, far exceeding the $1\%$ critical threshold, confirming that all unit roots have been eliminated.
+
+### 2.4 Seasonal Differencing (D = 1)
+To eliminate seasonal integrated dependencies, we first apply a first-order seasonal difference ($D=1$, lag 12). 
+
+```{r checking stationarity2}
+#Applying a seasonal difference (lag = 12 for monthly data)
+diff_sazonal_data <- train_data %>% 
+  mutate(UNRATE_seasonal_diff = difference(UNRATE, lag = 12))
+
+#Plot ACF and PACF of the seasonally-differenced series
+diff_sazonal_data %>% 
+  gg_tsdisplay(UNRATE_seasonal_diff, plot_type = 'partial', lag_max = 40)
+
+#ADF test on the seasonally-differenced column (omitting leading missing values)
+adf_drift_diff <- ur.df(na.omit(diff_sazonal_data$UNRATE_seasonal_diff), 
+                         type = "drift",
+                         lags = 12)
+summary(adf_drift_diff)
+```
+
+#### ACF & PACF Plot Interpretation and ADF Test Conclusion:
+After applying a seasonal difference ($D=1$, lag 12), the resulting series displays a more stable mean, and the ADF test statistic (`-4.66`) now rejects the null hypothesis of non-stationarity. However, the ACF plot decays slowly and shows significant, autocorrelations at early lags. This slow decay indicates that the series is still highly integrated and shows a strong regular trend. To continue our forecasting practice, an additional first-order difference ($d=1$) is necessary to solve this dependency.
+
+### 2.5 First-Order Difference (d = 1)
+To achieve full, robust stationarity, we apply a first difference ($d=1$) to the seasonally differenced series ($D=1$).
+
+```{r double differencing}
+#Applying an ordinary first difference (lag = 1) to the seasonal differenced data
+fodiff_data <- diff_sazonal_data %>% 
+  mutate(UNRATE_fo_diff = difference(UNRATE_seasonal_diff, lag = 1))
+
+#Plot the ACF and PACF up to lag 40
+fodiff_data %>% 
+  gg_tsdisplay(UNRATE_fo_diff, plot_type = 'partial', lag_max = 40)
+
+#ADF test
+adf_drift_diff2 <- ur.df(na.omit(fodiff_data$UNRATE_fo_diff), 
+                         type = "drift",
+                         lags = 13)
+summary(adf_drift_diff2)
+```
+
+#### Explanation of ACF & PACF Plots and ADF Test Conclusion:
+The double-differenced series ($d=1, D=1$) now exhibits strong stationary behavior. The formal Augmented Dickey-Fuller test yields an $t$-statistic of `-10.226`, which is significantly more negative than the 5% critical value boundary of `-2.86`. In fact, this test statistic is highly significant across all standard significance thresholds (1%, 5%, and 10%), allowing us to confidently reject the null hypothesis of non-stationarity.
+
+This stationary profile is visually confirmed by the correlogram properties. The sample ACF drops off immediately, displaying prominent, significant spikes at regular lags 2 and 3, along with a distinct, isolated seasonal spike at lag 12. Similarly, the sample PACF shows clear, significant spikes at regular lags 2 and 3, coupled with repeating seasonal spikes at lags 12, 24, and 36. These decaying seasonal markers provide strong empirical guidance for selecting our autoregressive and moving average orders during the upcoming estimation phase.
+
+## 3. Box-Jenkins Modeling: Model Selection and Diagnostics
+
+### 3.1 Candidate Model Specification and Information Criteria Comparison
+Based on the visual patterns observed in the ACF and PACF plots of our stationary, double-differenced series ($d=1, D=1$), we map the significant regular and seasonal spikes to their corresponding theoretical ARMA properties. We propose the following candidate Seasonal ARIMA specifications, explicitly justified by their lag configurations:
+
+1. **$\text{SARIMA}(2,1,2)(0,1,1)_{12}$**
+    * **Non-seasonal Component:** The regular ACF exhibits 2 significant spikes at lags 1 and 2 and tails off as an exponential decay or damped sine wave after. Conversely, the regular PACF displays 2 significant spikes at lags 1 and 2 and tails off or decays after. This matching simultaneous decay across both components justifies the inclusion of mixed autoregressive ($p=2$) and moving average ($q=2$) orders.
+    * **Seasonal Component:** At the seasonal boundaries, the ACF shows a single significant spike at lag 12 and cuts off immediately after, while the PACF decays exponentially across the seasonal lags ($12, 24, 36, \dots$). This behavior perfectly matches the theoretical footprint of a pure seasonal moving average process of order one ($Q=1$).
+
+2. **$\text{SARIMA}(3,1,0)(0,1,1)_{12}$**
+    * **Non-seasonal Component:** The regular ACF decays exponentially or tails off cleanly as a damped wave. However, the regular PACF shows 3 significant spikes at lags 1, 2, and 3 before cutting off to zero. This finite cutoff in the PACF provides standard empirical guidance for a pure non-seasonal autoregressive model of order three ($p=3$).
+    * **Seasonal Component:** The seasonal lags display a single prominent spike at lag 12 in the ACF which cuts off after, accompanied by an exponential decay pattern across the seasonal milestones in the PACF. This structure validates the selection of a seasonal moving average order of one ($Q=1$).
+
+3. **$\text{SARIMA}(2,1,0)(0,1,1)_{12}$**
+    * **Non-seasonal Component:** The regular ACF decays exponentially or tails off cleanly as a damped wave. Meanwhile, the regular PACF exhibits 2 distinct, significant spikes at lags 1 and 2 before cutting off completely. This finite cutoff in the PACF provides standard empirical guidance for a pure non-seasonal autoregressive model of order two ($p=2$).
+    * **Seasonal Component:** The seasonal lags display a single prominent spike at lag 12 in the ACF which cuts off after, accompanied by an exponential decay pattern across the seasonal milestones in the PACF. This structure validates the selection of a seasonal moving average order of one ($Q=1$).
+
+4. **$\text{SARIMA}(1,1,1)(1,1,1)_{12}$**
+    * **Non-seasonal Component:** The regular ACF exhibits a single significant spike at lag 1 and tails off exponentially, while the regular PACF displays a single significant spike at lag 1 and tails off. This simultaneous dampening behavior across both functions suggests a mixed process, justifying the baseline non-seasonal autoregressive ($p=1$) and moving average ($q=1$) orders.
+    * **Seasonal Component:** At the seasonal intervals, both the seasonal ACF and PACF show a prominent spike at lag 12 followed by a gradual decay at higher seasonal milestones ($24, 36, \dots$). This matching exponential decay pattern across the seasonal lags suggests a mixed seasonal structure, leading to the selection of a seasonal autoregressive order of one ($P=1$) and a seasonal moving average order of one ($Q=1$).
+
+### 3.2 Second-Approach Alternative Specifications
+During initial diagnostics and residual evaluations, the primary configurations proposed above did not yield completely satisfactory results regarding residual independence and parameter significance. To capture remaining dependencies and optimize model fit, a second modeling approach was executed to test more complex regular and seasonal lag structures:
+
+5. **$\text{SARIMA}(2,1,1)(1,1,2)_{12}$**
+    * **Non-seasonal Component:** This model expands the autoregressive structure to two lags ($p=2$) to account for deeper momentum while retaining a moving average parameter of one ($q=1$) to absorb short-term irregular shocks.
+    * **Seasonal Component:** The seasonal profile combines a seasonal autoregressive order of one ($P=1$) to handle persistent yearly correlations, combined with an expanded seasonal moving average order of two ($Q=2$) to structurally control autocorrelations extending out across multiple seasonal cycles.
+
+```{r}
+fit <- train_data %>%
+  model(
+    sarima212011 = ARIMA(UNRATE ~ pdq(2, 1, 2) + PDQ(0, 1, 1)),
+    sarima310011 = ARIMA(UNRATE ~ pdq(3, 1, 0) + PDQ(0, 1, 1)),
+    sarima210011 = ARIMA(UNRATE ~ pdq(2, 1, 0) + PDQ(0, 1, 1)),
+    sarima111111 = ARIMA(UNRATE ~ pdq(1, 1, 1) + PDQ(1, 1, 1)),
+    sarima211112 = ARIMA(UNRATE ~ pdq(2, 1, 1) + PDQ(1, 1, 2))
+  )
+
+# View the fitted model formulas
+fit %>%
+  pivot_longer(everything(), names_to = "Model Name", values_to = "Model Formulation")
+
+# Compare models using Information Criteria (AICc, BIC)
+glance(fit) %>%
+  arrange(AICc) %>%
+  select(.model, sigma2, log_lik, AIC, AICc, BIC)
+```
+
+#### Output Interpretation:
+* **Superior Performance of the Alternative Specification:** The alternative model, **`sarima211112`** ($\text{SARIMA}(2,1,1)(1,1,2)_{12}$), significantly outperforms all of our initial proposed configurations across every metric. It achieves the lowest AICc (**-344.71**) and the lowest Bayesian Information Criterion (BIC) (**-311.72**). 
+
+* **Goodness-of-Fit vs. Complexity:** `sarima211112` shows a substantial jump in the log-likelihood (**179.42**) and a minimized residual variance ($\sigma^2 = 0.0358$). This confirms that expanding the regular and seasonal lag polynomials successfully absorbs deep, systematic macroeconomic dependencies that the simpler baseline models missed, easily justifying the minor penalty for its additional parameters.
+
+* **Primary Approach Evaluation:** Among our primary proposed models, **`sarima212011`** performs the best (AICc = -296.86), while the simplest structure, **`sarima210011`**, shows the weakest fit (AICc = -254.90). This clear trend emphasizes that incorporating mixed AR and MA parameters is mathematically necessary to minimize information loss in this series.
+
+### 3.3 Automated Benchmarking via `auto.arima`
+
+To complement our manually specified models, we introduce an automated baseline using the `auto.arima` algorithm. This allows us to benchmark our structural lag hypotheses against an algorithmic search optimized across the parameter space.
+```{r generating autoarima model}
+auto_fit <- train_data %>%
+  model(auto_arima = ARIMA(UNRATE))
+#return model components
+auto_fit %>% select(auto_arima) %>% report() 
+#SARIMA(1,1,1)(2,0,2)
+
+```
+### 3.4 Comprehensive Model Selection and Information Criteria Analysis Including Automated Baseline
+
+Following the inclusion of the automated baseline selection, we evaluate the complete set of six fitted Seasonal ARIMA models. The performance metrics are compiled via the `glance()` function and arranged in ascending order based on the **Akaike Information Criterion corrected (AICc)** to optimize the trade-off between goodness-of-fit and parameter parsimony.
+
+```{r}
+fit <- train_data %>%
+  model(
+    sarima212011 = ARIMA(UNRATE ~ pdq(2, 1, 2) + PDQ(0, 1, 1)),
+    sarima310011 = ARIMA(UNRATE ~ pdq(3, 1, 0) + PDQ(0, 1, 1)),
+    sarima210011 = ARIMA(UNRATE ~ pdq(2, 1, 0) + PDQ(0, 1, 1)),
+    sarima111111 = ARIMA(UNRATE ~ pdq(1, 1, 1) + PDQ(1, 1, 1)),
+    sarima211112 = ARIMA(UNRATE ~ pdq(2, 1, 1) + PDQ(1, 1, 2)),
+    auto_sarima  = ARIMA(UNRATE ~ pdq(1, 1, 1) + PDQ(2, 0, 2))
+  )
+
+# View the fitted model formulas
+fit %>%
+  pivot_longer(everything(), names_to = "Model Name", values_to = "Model Formulation")
+
+# Compare models using Information Criteria (AICc, BIC) now with the auto
+glance(fit) %>%
+  arrange(AICc) %>%
+  select(.model, sigma2, log_lik, AIC, AICc, BIC)
+```
+
+#### Key Takeaways:
+
+* **Unambiguous Superiority of the Automated Model:** The `auto_sarima` model ($\text{SARIMA}(1,1,1)(2,0,2)_{12}$) establishes itself as the clear optimal choice across all information criteria. It records a heavily minimized AICc of **-392.94** and a BIC of **-359.85**, outperforming our best manual specification (`sarima211112`) by over 48 points on the AICc scale.
+
+* **Log-Likelihood vs. Variance Trade-Off:** Interestingly, `auto_sarima` does not possess the absolute lowest residual variance ($\sigma^2 = 0.0364$ vs. `sarima211112`'s $0.0358$). However, it achieves a vastly superior log-likelihood value (**203.54**). This indicates that the automated model's distinct seasonal choice—omitting a seasonal difference ($D=0$) in favor of double seasonal AR ($P=2$) and seasonal MA ($Q=2$) parameters—captures the conditional density of the series far more efficiently without over-allocating variation.
+
+* **Primary vs. Secondary Manual Insights:** Within our structural hypotheses, the second-approach configuration (`sarima211112`) remains the strongest manual alternative. All primary models designed straight from initial visual inspection fail to match the performance of the top two variations, highlighting the intricate, non-linear seasonal dependencies in the underlying macro-data that automated hyperparameter tuning is uniquely built to solve.
+
+## 4. Residual Diagnostics
+
+### 4.1 Visual Residual Diagnostics
+
+```{r residual diagnostics plots}
+# Generating residual visualization for the 1st approach models
+library(ggplot2)
+
+# Primary Approach Models
+fit %>% select(sarima212011) %>% gg_tsresiduals(lag_max = 36) + labs(title = "Residual Analysis: sarima212011")
+fit %>% select(sarima310011) %>% gg_tsresiduals(lag_max = 36) + labs(title = "Residual Analysis: sarima310011")
+fit %>% select(sarima210011) %>% gg_tsresiduals(lag_max = 36) + labs(title = "Residual Analysis: sarima210011")
+fit %>% select(sarima111111) %>% gg_tsresiduals(lag_max = 36) + labs(title = "Residual Analysis: sarima111111")
+
+# Second Approach Model
+fit %>% select(sarima211112) %>% gg_tsresiduals(lag_max = 36) + labs(title = "Residual Analysis: sarima211112")
+
+# Automated Baseline Model
+fit %>% select(auto_sarima)  %>% gg_tsresiduals(lag_max = 36) + labs(title = "Residual Analysis: auto_sarima")
+
+
+```
+
+#### Residual Plots Interpretation:
+Upon visual inspection of the diagnostic plots—including the innovation residuals, their ACF, and their empirical distributions—we observe a consistent pattern across all six configurations. While several models still exhibit a few persistent significant spikes in their respective ACF plots, these visual breaches alone do not definitively rule out the presence of white noise. 
+
+To formally evaluate whether these residual autocorrelations are statistically significant or merely the result of random chance, we must transition from visual inference to a rigorous mathematical check by conducting a **Ljung-Box portmanteau test**. 
+
+Aside from these borderline ACF spikes, the structural distribution profiles are highly encouraging: the residual histograms for all candidate models display strongly symmetric, bell-shaped curves, indicating that the core underlying assumption of normally distributed errors is well-satisfied across the board.
+
+### 4.2 Formal Diagnostic Tests (Ljung-Box and Box-Pierce)
+To rigorously test whether our model residuals behave as independent white noise, we examine the results of the formal Ljung-Box portmanteau test computed at a maximum lag of 36. This evaluation tests the null hypothesis ($H_0$) that the residuals are independently distributed (white noise) against the alternative hypothesis ($H_1$) that the residuals exhibit significant serial correlation. 
+
+A model successfully passes this test if its $p$-value is greater than our chosen significance level ($\alpha = 0.05$), failing to reject the white-noise assumption.
+
+```{r formal diagnostics at lag 29}
+bind_rows(
+  # Primary Approach Models
+  augment(fit) %>% filter(.model == "sarima212011") %>% features(.innov, ljung_box, lag = 29, dof = 5) %>% mutate(model_name = "sarima212011"),
+  augment(fit) %>% filter(.model == "sarima310011") %>% features(.innov, ljung_box, lag = 29, dof = 4) %>% mutate(model_name = "sarima310011"),
+  augment(fit) %>% filter(.model == "sarima210011") %>% features(.innov, ljung_box, lag = 29, dof = 3) %>% mutate(model_name = "sarima210011"),
+  augment(fit) %>% filter(.model == "sarima111111") %>% features(.innov, ljung_box, lag = 29, dof = 4) %>% mutate(model_name = "sarima111111"),
+  
+  # Second Approach Model
+  augment(fit) %>% filter(.model == "sarima211112") %>% features(.innov, ljung_box, lag = 29, dof = 6) %>% mutate(model_name = "sarima211112"),
+  
+  # Automated Baseline Model
+  augment(fit) %>% filter(.model == "auto_sarima")  %>% features(.innov, ljung_box, lag = 29, dof = 5) %>% mutate(model_name = "auto_sarima")
+) %>%
+  arrange(desc(lb_pvalue))
+```
+#### Result Interpretation
+
+| Model Identifier | Ljung-Box Statistic (`lb_stat`) | $p$-value (`lb_pvalue`) | Statistical Conclusion |
+| :--- | :---: | :---: | :--- |
+| **`sarima211112`** | **34.12** | **0.0634** | **Fail to Reject $H_0$ (White Noise)** |
+| **`sarima310011`** | 53.47 | 0.00078 | Reject $H_0$ (Serial Correlation) |
+| **`sarima212011`** | 60.02 | 0.000063 | Reject $H_0$ (Serial Correlation) |
+| **`sarima111111`** | 62.20 | 0.000052 | Reject $H_0$ (Serial Correlation) |
+| **`auto_sarima`** | 64.12 | 0.000016 | Reject $H_0$ (Serial Correlation) |
+| **`sarima210011`** | 70.57 | 0.000005 | Reject $H_0$ (Serial Correlation) |
+
+
+* **`sarima211112` Remains Globally Valid:** The alternative second-approach specification, **`sarima211112`** ($\text{SARIMA}(2,1,1)(1,1,2)_{12}$), remains the **only** model that successfully clears the diagnostic baseline at lag 29. With a $p$-value of **0.0634** (which stays safely above the 0.05 limit), it systematically validates our choice of a more complex regular and seasonal polynomial structure to scrub the error terms clean.
+
+* **Sensitivity of the Automated Model:** The **`auto_sarima`** baseline model exhibits even higher statistical significance for its residual dependence at this shorter interval ($p\text{-value} = 0.000016$). This further underscores that while the automated parameter search successfully optimized information criteria by avoiding a seasonal difference ($D=0$), it did so at the steep cost of leaving persistent, short-to-mid-term serial correlation unabsorbed.
+
+## 5. In-Sample Forecast and Fit Errors
+
+### 5.1 Final Model Estimation and In-Sample Performance and In-Sample Accuracy Analysis
+
+With the diagnostic phase completed and `sarima211112` ($\text{SARIMA}(2,1,1)(1,1,2)_{12}$) established as our uniquely valid specification for handling independent white-noise residuals, we isolate and fit this specific architecture to the training dataset. 
+
+To visually evaluate the model's tracking efficiency, we extract the in-sample fitted values via `augment()` and overlay them directly against the observed historic values. Finally, we run the `accuracy()` function to compute robust baseline error metrics—including Root Mean Squared Error (RMSE) and Mean Absolute Percentage Error (percentage scale metrics)—to establish a benchmark for our forthcoming out-of-sample forecast validation.
+```{r in-sample fit}
+# Estimate the final chosen model on the training data
+fit_final <- train_data %>%
+  model(sarima211112 = ARIMA(UNRATE ~ pdq(2, 1, 1) + PDQ(1, 1, 2)))
+
+# Extract fitted values
+aug_final <- augment(fit_final)
+
+# Plot actual vs in-sample fitted values
+aug_final %>%
+  ggplot(aes(x = observation_date)) +
+  geom_line(aes(y = UNRATE), colour = "black", linewidth = 0.6) + 
+  geom_line(aes(y = .fitted), colour = "steelblue", alpha = 0.8) +
+  labs(title = "In-Sample Fit: Observed (Black) vs Fitted by SARIMA(2,1,0)(1,1,3)12 (Blue)",
+       y = "Unemployment Rate (%)", 
+       x = "Observation Date") +
+  theme_minimal()
+
+# Calculate and compare In-Sample training errors across all candidate models
+accuracy(fit_final) %>%
+  select(.model, RMSE, MAE, MAPE, MASE) %>%
+  arrange(RMSE)
+```
+#### Accuracy Interpretation and Methodological Limitation:
+
+* **Highly Robust Fit Metrics:** The in-sample results demonstrate an exceptionally strong predictive tracking ability. The Root Mean Squared Error (RMSE) sits at **0.1870**, indicating that on average, the model's historical tracking deviates from the actual unemployment rate by less than 0.19 percentage points. 
+* **Percentage-Scale Precision:** The Mean Absolute Percentage Error (MAPE) reveals that the average deviation size is confined to a mere **2.54%** relative to the true values. Furthermore, a Mean Absolute Scaled Error (MASE) of **0.1579** (well below the threshold of 1.0) mathematically proves that our model is vastly superior to a standard non-seasonal naive baseline forecast.
+
+* **A Methodological Constraint on Model Comparison:** Under ideal structural modeling conditions, standard practice dictates selecting a secondary candidate model to serve as a direct comparative benchmark—evaluating historical performance trade-offs across competing lag configurations. However, a rigorous diagnostic process makes a comparative approach impossible here. Because **`sarima211112`** was uniquely capable of rendering independent, white-noise error terms, every other candidate specification was mathematically rejected for failing the formal Ljung-Box test. Attempting to benchmark our final results against models with serially correlated residuals would mean validating an unprincipled framework containing uncaptured systematic patterns, making `sarima211112` our sole scientifically sound choice.
+
+## 6. Out-of-Sample Forecast and Validation
+
+### 6.1 Out-of-Sample Forecasting and Testing (Validation Period: 2019)
+
+We now evaluate the predictive power of our final model by generating out-of-sample forecasts on the test set. 
+
+**Important Methodological Note:** It is crucial to highlight that our test window is strictly constrained to the year **2019**. This truncated validation period is an intentional structural choice designed to insulate the model from the unprecedented, non-linear economic shock triggered by the COVID-19 pandemic in early 2020. Because the massive spike in the US Unemployment Rate during 2020 represents an extreme black swan event rather than standard structural cyclicality, evaluating or extending a baseline linear ARIMA model into that period would warp the accuracy metrics and lead to uninformative conclusions. Limiting our validation to 2019 ensures a clean, mathematically fair environment to test our model's standard macroeconomic forecasting capabilities.
+
+```{r out-of-sample forecast}
+#Generate out-of-sample forecasts for all models on the test set (2019)
+fc_sarima211112 <- fit %>% select(sarima211112) %>% 
+  forecast(new_data = test_data)
+
+#Plot: Overlaid point forecasts of all models against the full time series
+fc_sarima211112 %>%
+  autoplot(unemployment_ts, level = NULL) +
+  labs(title = "US Unemployment Rate: Out-of-Sample Point Forecasts Overlaid",
+       y = "Unemployment Rate (%)", 
+       x = "Observation Date", 
+       colour = "Model") +
+  theme_minimal()
+
+#Zoom plot on the test period with 80% and 95% confidence intervals
+cutoff_date <- min(test_data$observation_date)
+fc_sarima211112 %>%
+  autoplot(unemployment_ts %>% filter(observation_date >= cutoff_date - 24)) +
+  facet_wrap(~ .model, ncol = 2) +
+  labs(title = "Out-of-Sample Forecast Comparison with Confidence Intervals",
+       y = "Unemployment Rate (%)", 
+       x = "Observation Date") +
+  theme_minimal()
+
+# Out-of-sample forecast accuracy metrics
+accuracy(fc_sarima211112, unemployment_ts) %>%
+  select(.model, RMSE, MAE, MAPE, MASE) %>%
+  arrange(RMSE)
+```
+
+#### Result Analysis:
+* **The Expected Generalization Premium:** As expected in real-world time series validation, the out-of-sample error metrics are higher than the training errors. The Root Mean Squared Error (RMSE) rises from 0.1870 to **0.4598**, meaning that on completely new data, the model's predictions deviate from the true US Unemployment Rate by an average of roughly 0.46 percentage points. This increase is a standard statistical reality known as the generalization premium—models naturally track historical points tighter than future realizations.
+
+* **Predictive Precision and Variance Control:** Despite the increase in error, a Mean Absolute Percentage Error (MAPE) of **11.48%** indicates that the model retains strong predictive precision, maintaining a relatively tight corridor of variance across the 12-month horizon. 
+
+### 6.2 Direct Comparison: In-Sample vs. Out-of-Sample Accuracy
+A critical final phase in predictive time series modeling is determining whether our selected specification, `sarima211112`, genuinely captured structural economic signals or merely "memorized" historical noise—a flaw known as **overfitting**. By evaluating the transition metrics between the training phase (In-Sample) and the validation phase (Out-of-Sample), we can evaluate the model's structural generalizability.
+
+```{r in vs out comparison}
+
+winner_fit <- train_data %>%
+  model(sarima211112 = ARIMA(UNRATE ~ pdq(2, 1, 1) + PDQ(1, 1, 2)))
+
+# Merge and display in-sample vs out-of-sample metrics
+metrics_comparison <- bind_rows(
+  accuracy(winner_fit) %>% mutate(Type = "In-Sample (Training)"),
+  accuracy(fc_sarima211112, unemployment_ts) %>% mutate(Type = "Out-of-Sample (Testing)")
+) %>%
+  select(Type, .model, RMSE, MAE, MAPE, MASE)
+metrics_comparison
+```
+
+#### In-Sample vs. Out-of-Sample Comparison Analysis:
+The most robust indicator against overfitting in this evaluation is the Mean Absolute Scaled Error (MASE). The out-of-sample MASE registers at **0.4777**. Because any MASE value significantly below 1.0 mathematically proves that the model's complex structural forecasts are substantially more accurate than a simple, baseline one-step naive forecast on the same test set, we can definitively rule out overfitting.
+
+## 7. Conclusion and Reflection
+
+### 7.1 Summary of Outcomes and Diagnostic Triumph
+In this project, we systematically applied the rigorous Box-Jenkins methodology to model and forecast the US Civilian Unemployment Rate (`UNRATE`). Initial exploratory data analysis and formal unit root testing confirmed that the raw macroeconomic series was heavily non-stationary, characterized by structural trends and distinct seasonal cycles. To stabilize the mean and variance, we implemented a dual-filtering strategy: a seasonal difference ($D=1$, period 12) combined with a first-order ordinary difference ($d=1$). 
+
+Using this stationary, double-differenced framework, we formulated multiple competing Seasonal ARIMA specifications. While automated hyperparameter tuning via `auto.arima` yielded an optimization profile that minimized traditional information criteria, it fundamentally failed our formal diagnostic testing phase. Through a rigorous execution of the Ljung-Box portmanteau test—strictly evaluated at lag 29 as determined by the sample size rule of thumb ($\sqrt{T} = \sqrt{852} \approx 29.19$)—our manually specified **$\text{SARIMA}(2,1,1)(1,1,2)_{12}$** (`sarima211112`) emerged as the unique structurally valid configuration. By registering a $p$-value above the critical 0.05 threshold ($0.0634$ at lag 29), it was the only candidate model capable of stripping out serial correlation and rendering true, independent white-noise residuals.
+
+### 7.2 Dataset Constraints and Methodological Resilience
+Working with this specific macroeconomic dataset presented significant structural hurdles that required careful navigation:
+
+* **The Finite Percentage Boundary Constraint:** Unlike unbounded monetary metrics, the unemployment rate is fundamentally bounded finite data, expressed strictly as a percentage ($0\% \le \text{UNRATE} \le 100\%$). Because linear ARIMA models technically assume an infinite, continuous sample space, there is an inherent mathematical risk of projecting values outside logical boundaries or underestimating variance near systemic floors. 
+* **Strict Test Window Restrictions:** The dataset's timeline presented a massive structural break with the arrival of the 2020 COVID-19 pandemic. To insulate our validation from this extreme, non-linear black swan shock—which would completely warp standard error metrics—we intentionally restricted our out-of-sample test window strictly to the 12 months of 2019. 
+
+We successfully overcame these combined obstacles by utilizing a dense, long-term historical training sample ($T = 852$ observations across 71 years) that gave the complex lag polynomials enough structural history to learn stable economic cycles away from boundary limits. Ultimately, the model proved its resilience during out-of-sample testing. It achieved a Root Mean Squared Error (RMSE) of **0.4598** and a Mean Absolute Scaled Error (MASE) of **0.4777**. Because the MASE remained comfortably below the critical 1.0 threshold, we mathematically confirmed that the model generalized beautifully to unseen data without a trace of overfitting, proving that our diagnostic choices extracted a genuine economic signal.
+
+### 7.3 Limitations and Future Directions
+Despite the predictive accuracy and structural validity achieved by the $\text{SARIMA}(2,1,1)(1,1,2)_{12}$ model during stable economic conditions, two key limitations remain:
+1. **Vulnerability to Regime Shifts:** As a linear stochastic model, ARIMA operates under the assumption that the future will mirror past regularities. It is inherently blind to abrupt structural breaks or exogenous macroeconomic shocks (such as the 2020 pandemic anomaly).
+2. **Univariate Isolation:** The model operates in a multi-variable vacuum, depending entirely on its own historical lags and ignoring crucial co-dependent economic pillars such as GDP growth, inflation (CPI), interest rates, and central bank policy interventions.
+
+To build on these findings and circumvent these limitations, future research could explore:
+* **Multivariate Frameworks (VARX / ARIMAX):** Integrating exogenous macroeconomic indicators into a vector autoregressive structure to capture dynamic, multi-dimensional economic interactions.
+* **Non-Linear and Hybrid Machine Learning Architectures:** Deploying hybrid frameworks, such as a combined Prophet-ARIMA algorithm, or deep recurrent architectures like Long Short-Term Memory (LSTM) networks, which are uniquely suited for handling structural boundary changes, complex non-linear trends, and abrupt regime shifts.

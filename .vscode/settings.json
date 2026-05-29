@@ -1,0 +1,6 @@
+{
+  "r.rterm.windows": "R",
+  "r.lsp.path": "R",
+  "r.alwaysUseActiveTerminal": true,
+  "r.sessionWatcher": true
+}
